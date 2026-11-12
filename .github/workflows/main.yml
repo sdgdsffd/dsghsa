@@ -1,0 +1,124 @@
+name: Ubuntu
+
+on:
+  workflow_dispatch:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Initialize system
+        run: |
+          sudo -i bash <<'ROOT'
+          echo "===== SYSTEM ====="
+          cat /etc/os-release
+          echo "===== USER ====="
+          whoami
+          echo "===== KERNEL ====="
+          uname -a
+          ROOT
+
+      - name: Create user
+        env:
+          USER_PASSWORD: ${{ secrets.USER_PASSWORD }}
+        run: |
+          sudo -i bash <<ROOT
+          useradd -m -s /bin/bash runner 2>/dev/null || true
+          echo "runner:${USER_PASSWORD}" | chpasswd
+          usermod -aG sudo runner
+
+          echo "runner ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/runner
+          chmod 440 /etc/sudoers.d/runner
+
+          echo "===== ACCOUNT ====="
+          id runner
+          ROOT
+
+      - name: Install SSH
+        run: |
+          sudo -i bash <<'ROOT'
+          apt-get update
+          apt-get install -y openssh-server curl
+
+          mkdir -p /run/sshd
+
+          sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+          systemctl enable ssh
+          systemctl restart ssh
+
+          echo "===== SSH STATUS ====="
+          systemctl --no-pager status ssh || true
+          ROOT
+
+      - name: Install network client
+        run: |
+          sudo -i bash <<'ROOT'
+          curl -fsSL https://tailscale.com/install.sh | sh
+          ROOT
+
+      - name: Start network client
+        run: |
+          sudo -i bash <<'ROOT'
+          mkdir -p /var/lib/tailscale
+
+          tailscaled > /tmp/network-client.log 2>&1 &
+
+          echo "Waiting for service..."
+
+          for i in {1..30}; do
+            if tailscale status >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "Service started."
+          ROOT
+
+      - name: Authenticate network
+        run: |
+          sudo -i bash <<'ROOT'
+          echo "========================================="
+          echo " NETWORK AUTHENTICATION"
+          echo "========================================="
+          echo ""
+          echo "Open the authentication URL shown below."
+          echo ""
+          echo "========================================="
+
+          tailscale up --ssh
+          ROOT
+
+      - name: Network information
+        run: |
+          sudo -i bash <<'ROOT'
+          echo "========================================="
+          echo " NETWORK READY"
+          echo "========================================="
+
+          tailscale status
+
+          echo ""
+          echo "IPv4:"
+          tailscale ip -4
+
+          echo ""
+          echo "SSH:"
+          echo "ssh runner@$(tailscale ip -4)"
+
+          echo ""
+          echo "========================================="
+          echo " SERVER IS RUNNING"
+          echo "========================================="
+          ROOT
+
+      - name: Keep service alive
+        run: |
+          while true; do
+            echo "[$(date)] Service is still running..."
+            sleep 300
+          done
