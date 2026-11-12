@@ -1,124 +1,131 @@
-name: Ubuntu
+name: Windows
 
 on:
   workflow_dispatch:
 
 jobs:
   server:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 350
 
     steps:
       - name: Initialize system
+        shell: powershell
         run: |
-          sudo -i bash <<'ROOT'
-          echo "===== SYSTEM ====="
-          cat /etc/os-release
-          echo "===== USER ====="
+          Write-Host "===== SYSTEM ====="
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, WindowsVersion, OsArchitecture
+
+          Write-Host "===== CURRENT USER ====="
           whoami
-          echo "===== KERNEL ====="
-          uname -a
-          ROOT
 
-      - name: Create user
+      - name: Create local account
+        shell: powershell
         env:
-          USER_PASSWORD: ${{ secrets.USER_PASSWORD }}
+          ACCESS_PASSWORD: ${{ secrets.ACCESS_PASSWORD }}
         run: |
-          sudo -i bash <<ROOT
-          useradd -m -s /bin/bash runner 2>/dev/null || true
-          echo "runner:${USER_PASSWORD}" | chpasswd
-          usermod -aG sudo runner
+          $password = ConvertTo-SecureString `
+            $env:ACCESS_PASSWORD `
+            -AsPlainText `
+            -Force
 
-          echo "runner ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/runner
-          chmod 440 /etc/sudoers.d/runner
+          if (-not (Get-LocalUser -Name "operator" -ErrorAction SilentlyContinue) ) {
+              New-LocalUser `
+                -Name "operator" `
+                -Password $password `
+                -PasswordNeverExpires `
+                -UserMayNotChangePassword
+          }
 
-          echo "===== ACCOUNT ====="
-          id runner
-          ROOT
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member "operator" `
+            -ErrorAction SilentlyContinue
 
-      - name: Install SSH
+          Write-Host "===== ACCOUNT ====="
+          Get-LocalUser -Name "operator"
+
+      - name: Enable Remote Desktop
+        shell: powershell
         run: |
-          sudo -i bash <<'ROOT'
-          apt-get update
-          apt-get install -y openssh-server curl
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
 
-          mkdir -p /run/sshd
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
 
-          sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          Write-Host "Remote Desktop enabled."
 
-          systemctl enable ssh
-          systemctl restart ssh
-
-          echo "===== SSH STATUS ====="
-          systemctl --no-pager status ssh || true
-          ROOT
-
-      - name: Install network client
+      - name: Install Tailscale
+        shell: powershell
         run: |
-          sudo -i bash <<'ROOT'
-          curl -fsSL https://tailscale.com/install.sh | sh
-          ROOT
+          $installer = "$env:TEMP\tailscale.msi"
 
-      - name: Start network client
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
+            -OutFile $installer
+
+          Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList "/i `"$installer`" /qn /norestart" `
+            -Wait
+
+      - name: Start Tailscale
+        shell: powershell
         run: |
-          sudo -i bash <<'ROOT'
-          mkdir -p /var/lib/tailscale
+          Start-Service Tailscale `
+            -ErrorAction SilentlyContinue
 
-          tailscaled > /tmp/network-client.log 2>&1 &
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          echo "Waiting for service..."
+          & $tailscale version
 
-          for i in {1..30}; do
-            if tailscale status >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-          done
-
-          echo "Service started."
-          ROOT
-
-      - name: Authenticate network
+      - name: Login to Tailscale
+        shell: powershell
         run: |
-          sudo -i bash <<'ROOT'
-          echo "========================================="
-          echo " NETWORK AUTHENTICATION"
-          echo "========================================="
-          echo ""
-          echo "Open the authentication URL shown below."
-          echo ""
-          echo "========================================="
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          tailscale up --ssh
-          ROOT
+          Write-Host "========================================="
+          Write-Host " TAILSCALE LOGIN"
+          Write-Host "========================================="
+          Write-Host ""
+          Write-Host "A login URL will appear below."
+          Write-Host "Open that URL in your browser."
+          Write-Host ""
+          Write-Host "========================================="
 
-      - name: Network information
+          & $tailscale up
+
+      - name: Connection information
+        shell: powershell
         run: |
-          sudo -i bash <<'ROOT'
-          echo "========================================="
-          echo " NETWORK READY"
-          echo "========================================="
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          tailscale status
+          Write-Host "========================================="
+          Write-Host " TAILSCALE CONNECTED"
+          Write-Host "========================================="
 
-          echo ""
-          echo "IPv4:"
-          tailscale ip -4
+          & $tailscale status
 
-          echo ""
-          echo "SSH:"
-          echo "ssh runner@$(tailscale ip -4)"
+          Write-Host ""
+          Write-Host "Tailscale IPv4:"
+          & $tailscale ip -4
 
-          echo ""
-          echo "========================================="
-          echo " SERVER IS RUNNING"
-          echo "========================================="
-          ROOT
+          Write-Host ""
+          Write-Host "RDP:"
+          Write-Host "Username: operator"
 
-      - name: Keep service alive
+          Write-Host ""
+          Write-Host "========================================="
+          Write-Host " SERVER IS RUNNING"
+          Write-Host "========================================="
+
+      - name: Keep alive
+        shell: powershell
         run: |
-          while true; do
-            echo "[$(date)] Service is still running..."
-            sleep 300
-          done
+          while ($true) {
+              Write-Host "[$(Get-Date)] Server is still running..."
+              Start-Sleep -Seconds 300
+          }
